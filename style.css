@@ -1,0 +1,8 @@
+body{font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:16px}
+input,select,button{font-size:16px;padding:10px;margin:4px 0;width:100%;box-sizing:border-box}
+.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #ddd}
+.in{color:#16a34a}.out{color:#dc2626}.err{color:#dc2626}
+.del{width:auto;font-size:12px;padding:4px 8px}
+.link{background:none;border:none;color:#2563eb;text-decoration:underline}
+.tag{font-size:12px;background:#eee;border-radius:4px;padding:2px 6px;margin-right:6px}
+small{color:#777}
