@@ -15,6 +15,7 @@ const today = () => new Date().toLocaleDateString('sv-SE');
 const esc = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const legacyItems = () => JSON.parse(localStorage.getItem('items') || '[]');
 let price = null, items = [], unsub = null, user = null;
+let viewYM = today().slice(0, 7);   // 보고 있는 달 (예: 2026-11)
 
 /* ---------- 카테고리 ---------- */
 function fillCats(){
@@ -37,17 +38,28 @@ async function loadPrice(){
 
 /* ---------- 화면 ---------- */
 function render(){
-  const ym = today().slice(0,7);
-  let sum = 0;
-  $('list').innerHTML = items.map(i => {
-    if (i.date.startsWith(ym)) sum += i.sats;
-    return `<div class="row"><div><span class="tag">${esc(i.category) || '미분류'}</span>${esc(i.memo) || '-'}<br>
+  const list = items.filter(i => (i.date || '').startsWith(viewYM));
+  let sum = 0, inc = 0, exp = 0;
+  list.forEach(i => { sum += i.sats; if (i.sats > 0) inc += i.sats; else exp += i.sats; });
+  $('monthLabel').textContent = viewYM.replace('-', '년 ') + '월';
+  $('list').innerHTML = list.length ? list.map(i =>
+    `<div class="row"><div><span class="tag">${esc(i.category) || '미분류'}</span>${esc(i.memo) || '-'}<br>
       <small>${i.date} · ${i.krw.toLocaleString()}원 @${i.price.toLocaleString()}</small><br>
       <button class="del" data-id="${i.id}">삭제</button></div>
-      <div class="${i.sats<0?'out':'in'}">${i.sats.toLocaleString()} sats</div></div>`;
-  }).join('');
+      <div class="${i.sats<0?'out':'in'}">${i.sats.toLocaleString()} sats</div></div>`
+  ).join('') : '<p><small>이 달에는 기록이 없어요</small></p>';
   $('sum').textContent = sum.toLocaleString();
+  $('inout').textContent = '수입 ' + inc.toLocaleString() + ' / 지출 ' + Math.abs(exp).toLocaleString() + ' sats';
 }
+
+function shiftMonth(d){
+  const [y, m] = viewYM.split('-').map(Number);
+  const dt = new Date(y, m - 1 + d, 1);
+  viewYM = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+  render();
+}
+$('prevM').onclick = () => shiftMonth(-1);
+$('nextM').onclick = () => shiftMonth(1);
 
 /* ---------- 로그인 / 회원가입 ---------- */
 const msg = t => { $('authMsg').textContent = t; };
@@ -112,6 +124,7 @@ $('add').onclick = async () => {
       memo: $('memo').value, createdAt: Date.now()
     });
     $('amount').value = ''; $('memo').value = '';
+               viewYM = today().slice(0, 7);
   } catch(e){ alert('저장 실패: ' + e.message); }
 };
 
