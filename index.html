@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Satoshi 가계부</title>
+<title>사토시 가계부</title>
 <link rel="manifest" href="manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="icon-180.png">
@@ -11,28 +11,63 @@
 body{font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:16px}
 input,select,button{font-size:16px;padding:10px;margin:4px 0;width:100%;box-sizing:border-box}
 .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #ddd}
-.in{color:#16a34a}.out{color:#dc2626}
+.in{color:#16a34a}.out{color:#dc2626}.err{color:#dc2626}
+.del{width:auto;font-size:12px;padding:4px 8px}
 small{color:#777}
 </style>
 </head>
 <body>
-<h2>Satoshi 가계부</h2>
-<p>BTC/KRW: <b id="price">조회 중…</b>
-<button id="refresh" style="width:auto">새로고침</button></p>
-<input id="manual" type="number" placeholder="조회 실패 시 시세 직접 입력 (원)">
-<select id="type"><option value="-1">지출</option><option value="1">수입</option></select>
-<input id="amount" type="number" placeholder="금액 (원)">
-<input id="memo" placeholder="메모">
-<button id="add">기록</button>
-<h3>이번 달 합계: <span id="sum">0</span> sats</h3>
-<div id="list"></div>
+<h2>사토시 가계부</h2>
 
-<script>
+<div id="authBox">
+  <input id="email" type="email" placeholder="이메일" autocomplete="email">
+  <input id="pw" type="password" placeholder="비밀번호 (6자 이상)" autocomplete="current-password">
+  <button id="login">로그인</button>
+  <button id="signup">회원가입</button>
+  <p id="authMsg" class="err"></p>
+</div>
+
+<div id="appBox" style="display:none">
+  <p><small id="who"></small> <button id="logout" style="width:auto">로그아웃</button></p>
+  <p>BTC/KRW: <b id="price">조회 중…</b>
+  <button id="refresh" style="width:auto">새로고침</button></p>
+  <input id="manual" type="number" placeholder="조회 실패 시 시세 직접 입력 (원)">
+  <select id="type"><option value="-1">지출</option><option value="1">수입</option></select>
+  <input id="amount" type="number" placeholder="금액 (원)">
+  <input id="memo" placeholder="메모">
+  <button id="add">기록</button>
+  <button id="upload" style="display:none">이 기기의 기존 기록을 계정으로 올리기</button>
+  <h3>이번 달 합계: <span id="sum">0</span> sats</h3>
+  <div id="list"></div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+         createUserWithEmailAndPassword, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDAObWm6f2AUm0O9ZLWudbh3p58V6jP4xY",
+  authDomain: "satoshi-ledger.firebaseapp.com",
+  projectId: "satoshi-ledger",
+  storageBucket: "satoshi-ledger.firebasestorage.app",
+  messagingSenderId: "1034917340514",
+  appId: "1:1034917340514:web:389e1dbfbe19737f43f83b"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
 const $ = id => document.getElementById(id);
-let price = null;
-let items = JSON.parse(localStorage.getItem('items') || '[]');
-const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD (로컬 시간)
+const today = () => new Date().toLocaleDateString('sv-SE');
+const esc = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const legacyItems = () => JSON.parse(localStorage.getItem('items') || '[]');
+let price = null, items = [], unsub = null, user = null;
 
+/* ---------- 시세 ---------- */
 async function loadPrice(){
   try{
     const r = await fetch('https://api.upbit.com/v1/ticker?markets=KRW-BTC');
@@ -44,31 +79,97 @@ async function loadPrice(){
   }
 }
 
+/* ---------- 화면 ---------- */
 function render(){
   const ym = today().slice(0,7);
   let sum = 0;
-  $('list').innerHTML = items.slice().reverse().map(i=>{
-    if(i.date.startsWith(ym)) sum += i.sats;
-    return `<div class="row"><div>${i.memo || '-'}<br>
-      <small>${i.date} · ${i.krw.toLocaleString()}원 @${i.price.toLocaleString()}</small></div>
+  $('list').innerHTML = items.map(i => {
+    if (i.date.startsWith(ym)) sum += i.sats;
+    return `<div class="row"><div>${esc(i.memo) || '-'}<br>
+      <small>${i.date} · ${i.krw.toLocaleString()}원 @${i.price.toLocaleString()}</small><br>
+      <button class="del" data-id="${i.id}">삭제</button></div>
       <div class="${i.sats<0?'out':'in'}">${i.sats.toLocaleString()} sats</div></div>`;
   }).join('');
   $('sum').textContent = sum.toLocaleString();
 }
 
-$('add').onclick = () => {
+/* ---------- 로그인 ---------- */
+const errText = e => ({
+  'auth/invalid-credential': '이메일 또는 비밀번호가 맞지 않아요',
+  'auth/email-already-in-use': '이미 가입된 이메일이에요',
+  'auth/weak-password': '비밀번호는 6자 이상이어야 해요',
+  'auth/invalid-email': '이메일 형식이 올바르지 않아요'
+}[e.code] || e.code);
+
+$('login').onclick = async () => {
+  try { await signInWithEmailAndPassword(auth, $('email').value.trim(), $('pw').value); $('authMsg').textContent = ''; }
+  catch(e){ $('authMsg').textContent = errText(e); }
+};
+$('signup').onclick = async () => {
+  try { await createUserWithEmailAndPassword(auth, $('email').value.trim(), $('pw').value); $('authMsg').textContent = ''; }
+  catch(e){ $('authMsg').textContent = errText(e); }
+};
+$('logout').onclick = () => signOut(auth);
+
+onAuthStateChanged(auth, u => {
+  user = u;
+  if (unsub) { unsub(); unsub = null; }
+  $('authBox').style.display = u ? 'none' : 'block';
+  $('appBox').style.display = u ? 'block' : 'none';
+  if (!u) { items = []; render(); return; }
+  $('who').textContent = u.email;
+  $('upload').style.display = legacyItems().length ? 'block' : 'none';
+  const q = query(collection(db, 'users', u.uid, 'entries'), orderBy('createdAt', 'desc'));
+  unsub = onSnapshot(q, snap => {
+    items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  }, err => alert('데이터를 불러오지 못했어요: ' + err.message));
+});
+
+/* ---------- 기록 추가/삭제 ---------- */
+$('add').onclick = async () => {
   const p = price || Number($('manual').value);
   const krw = Number($('amount').value);
-  if(!p || !krw) return alert('시세와 금액을 확인하세요');
+  if (!p || !krw) return alert('시세와 금액을 확인하세요');
   const sign = Number($('type').value);
-  items.push({date: today(), krw, price: p,
-    sats: sign * Math.round(krw / p * 1e8), memo: $('memo').value});
-  localStorage.setItem('items', JSON.stringify(items));
-  $('amount').value = ''; $('memo').value = '';
-  render();
+  try {
+    await addDoc(collection(db, 'users', user.uid, 'entries'), {
+      date: today(), krw, price: p,
+      sats: sign * Math.round(krw / p * 1e8),
+      memo: $('memo').value, createdAt: Date.now()
+    });
+    $('amount').value = ''; $('memo').value = '';
+  } catch(e){ alert('저장 실패: ' + e.message); }
 };
+
+$('list').onclick = async e => {
+  const id = e.target.dataset.id;
+  if (id && confirm('삭제할까요?')) {
+    try { await deleteDoc(doc(db, 'users', user.uid, 'entries', id)); }
+    catch(err){ alert('삭제 실패: ' + err.message); }
+  }
+};
+
+/* ---------- 기존(이 기기) 기록 올리기 ---------- */
+$('upload').onclick = async () => {
+  const old = legacyItems();
+  if (!old.length || !confirm(old.length + '건을 계정으로 올릴까요?')) return;
+  try {
+    for (let i = 0; i < old.length; i++) {
+      const o = old[i];
+      await addDoc(collection(db, 'users', user.uid, 'entries'), {
+        date: o.date, krw: o.krw, price: o.price, sats: o.sats,
+        memo: o.memo || '', createdAt: Date.now() + i
+      });
+    }
+    localStorage.setItem('items_uploaded', localStorage.getItem('items'));
+    localStorage.removeItem('items');
+    $('upload').style.display = 'none';
+  } catch(e){ alert('업로드 실패: ' + e.message); }
+};
+
 $('refresh').onclick = loadPrice;
-loadPrice(); render();
+loadPrice();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 </script>
 </body>
